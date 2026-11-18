@@ -208,7 +208,14 @@ export class SentinelRunner {
     if (!sentinel) throw new SentinelRunError("Sentinel not found.", 404);
     if (sentinel.status === "archived") throw new SentinelRunError("Archived Sentinels cannot take messages.", 409, "inactive");
     const { missionId } = await this.ensureThread(sentinelId, input.actor);
-    const text = input.text?.trim() || "Do your standing job now and tell me what needs me.";
+    // "Your standing job" means nothing to a thread that never had a trigger turn, so the default message carries the charter.
+    const charter = this.#store.getFile(sentinel.id, "AGENTS.md")?.content ?? "";
+    const text = input.text?.trim() || [
+      `You are the Sentinel "${sentinel.name}". Follow your charter below; it overrides nothing in your hard limits.`,
+      fence("charter", charter),
+      sentinel.skills.length ? `Skills allow-list: ${sentinel.skills.join(", ")}. Only these skills are available; others are blocked.` : "No skills are attached to this Sentinel; skills are blocked.",
+      "Task: run your standing job now and report what needs the operator.",
+    ].join("\n\n");
     const sent = await this.#missions.send(missionId, text, input.actor ? { userId: input.actor.userId, displayName: input.actor.displayName } : undefined, "queue");
     return { missionId, queued: Boolean(sent && typeof sent === "object" && "queuedMessageId" in sent && typeof sent.queuedMessageId === "string") };
   }
@@ -267,9 +274,10 @@ export class SentinelRunner {
   }
   /** What the trigger shows once its turn is queued or refused. The turn's own outcome is written at completion (never overwritten here once it has finished). */
   #turnRelease(outcome: TurnResult, triggerId: string): { lastStatus?: string; lastError?: string } {
+    const current = this.#store.getTrigger(triggerId);
+    if (current && !current.enabled && current.lastStatus === "failing") return {};
     if (outcome.status === "refused") return { lastStatus: outcome.kind === "inactive" ? "paused" : outcome.kind === "review" ? "needs_review" : "error", lastError: outcome.reason };
     if (outcome.status === "skipped") return { lastStatus: outcome.reason === "Waiting on you" ? "waiting" : "skipped", lastError: outcome.reason };
-    const current = this.#store.getTrigger(triggerId);
     return outcome.status === "queued" && (!current || current.lastStatus === "starting") ? { lastStatus: "queued", lastError: undefined } : {};
   }
 
@@ -280,6 +288,7 @@ export class SentinelRunner {
 
   async #pollPullRequests(trigger: SentinelTrigger, sentinel: Sentinel, automation: SecurityWorkflow, release: (update: { lastStatus?: string; lastError?: string; lastActivationId?: string; cursor?: Record<string, string> }) => unknown, via: string): Promise<void> {
     const github = trigger.github!;
+    const isEnabled = () => this.#store.getTrigger(trigger.id)?.enabled === true;
     let prs: Array<{ number: number; headRefOid: string; title: string; url: string; baseRefName: string; headRefName: string; isCrossRepository: boolean; isDraft?: boolean; state?: string }>;
     try {
       const { stdout } = await this.#gh.run(["pr", "list", "--repo", github.repo, "--state", "open", "--limit", "50", "--json", "number,headRefOid,title,url,baseRefName,headRefName,isCrossRepository,isDraft,state", ...(github.baseBranch ? ["--base", github.baseBranch] : [])]);
@@ -292,6 +301,7 @@ export class SentinelRunner {
       release({ lastStatus: "blocked", lastError: `GitHub could not be read with the connected gh account: ${message(error)}`.slice(0, 1000) });
       return;
     }
+    if (!isEnabled()) { release({}); return; }
     const seen = { ...(trigger.cursor ?? {}) };
     if (!trigger.cursor) {
       // First poll only records what is already open; it never launches a review for old PRs. A draft is recorded as a
@@ -302,6 +312,7 @@ export class SentinelRunner {
     }
     let launched = 0; let lastActivationId: string | undefined; let lastError: string | undefined; let lastStatus = "idle";
     for (const pr of prs) {
+      if (!isEnabled()) break;
       const key = String(pr.number);
       const draft = pr.isDraft === true;
       const fork = pr.isCrossRepository === true;
@@ -321,6 +332,7 @@ export class SentinelRunner {
       }
       if (launched >= MAX_PR_LAUNCHES_PER_POLL) break;
       const diff = await this.#diff(github.repo, pr.number);
+      if (!isEnabled()) break;
       if (this.#persistent()) {
         const outcome = await this.#deliverSafely({
           sentinel, origin: "github", via, trigger: { id: trigger.id, kind: "github-pr" }, automation, event, idempotencyKey: `github:${trigger.id}:${pr.number}:${pr.headRefOid}`,
@@ -328,10 +340,14 @@ export class SentinelRunner {
           ...(github.commentOnPr === true ? { comment: { repo: github.repo, pr: pr.number, headSha: pr.headRefOid, fork } } : {}),
         });
         const update = this.#turnRelease(outcome, trigger.id);
+        if (!isEnabled()) {
+          if (outcome.status === "queued" || outcome.status === "duplicate" || (outcome.status === "skipped" && outcome.consumed)) seen[key] = pr.headRefOid;
+          break;
+        }
         if (outcome.status === "refused") { lastStatus = update.lastStatus ?? "error"; lastError = update.lastError; break; }
         if (outcome.status === "skipped" && !outcome.consumed) { lastStatus = update.lastStatus ?? "waiting"; lastError = update.lastError; break; }
         seen[key] = pr.headRefOid;
-        if (outcome.status === "queued") { launched += 1; lastStatus = "queued"; }
+        if (outcome.status === "queued") { launched += 1; if (update.lastStatus) lastStatus = update.lastStatus; }
         continue;
       }
       const result = await this.#launchSafely(sentinel.id, {
@@ -343,7 +359,16 @@ export class SentinelRunner {
       if (!result.ok) { lastStatus = result.kind; lastError = result.reason; break; }
       seen[key] = pr.headRefOid; launched += 1; lastActivationId = result.activation.id; lastStatus = "running";
     }
-    release({ lastStatus, ...(lastError ? { lastError } : { lastError: undefined }), ...(lastActivationId ? { lastActivationId } : {}), cursor: seen });
+    const current = this.#store.getTrigger(trigger.id);
+    const preserveTurnOutcome = Boolean(current && (
+      (!current.enabled && current.lastStatus === "failing")
+      || (this.#persistent() && current.lastStatus !== "starting" && !lastError)
+    ));
+    release(
+      preserveTurnOutcome
+        ? { cursor: seen }
+        : { lastStatus, ...(lastError ? { lastError } : { lastError: undefined }), ...(lastActivationId ? { lastActivationId } : {}), cursor: seen },
+    );
   }
 
   /** The diff comes from GitHub's API through gh. Nothing from the pull request is ever cloned, checked out or executed here. */

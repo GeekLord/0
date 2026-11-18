@@ -19,9 +19,9 @@ Tags:
 ghcr.io/0sec-labs/0security:latest
 ghcr.io/0sec-labs/0security:<sha>
 ghcr.io/0sec-labs/0security:edge      # nightly build of the newest green main commit
-ghcr.io/0sec-labs/0security:v0.38.0   # releases only
-ghcr.io/0sec-labs/0security:0.38.0    # releases only
-ghcr.io/0sec-labs/0security:0.38      # releases only, follows the latest 0.37.x
+ghcr.io/0sec-labs/0security:v0.39.0   # releases only
+ghcr.io/0sec-labs/0security:0.39.0    # releases only
+ghcr.io/0sec-labs/0security:0.39      # releases only, follows the latest 0.37.x
 ```
 
 **Sources:** [`Dockerfile`](https://github.com/0sec-labs/0security/blob/main/scripts/docker/Dockerfile),
@@ -81,7 +81,7 @@ ZERO_ALLOWED_HOSTS=0.example.com
 docker compose --profile proxy up -d
 ```
 
-Without Compose: `docker run -d --name zero -p 127.0.0.1:48123:48123 -v zero-data:/data -e ZERO_ACCESS_TOKEN=... ghcr.io/0sec-labs/0security:v0.38.0`.
+Without Compose: `docker run -d --name zero -p 127.0.0.1:48123:48123 -v zero-data:/data -e ZERO_ACCESS_TOKEN=... ghcr.io/0sec-labs/0security:v0.39.0`.
 
 Open the address and enter the access token. If you left `ZERO_ACCESS_TOKEN` empty, the first start generates one, prints it once in `docker compose logs zero` and stores it (mode 0600) in `/data/.0/access-token`. With [team accounts](#teams) configured (`ZERO_TEAM_CONFIG`), people sign in with those instead.
 
@@ -128,7 +128,7 @@ Restore by stopping the container, extracting the archive into the volume, and s
 ### Upgrade
 
 ```bash
-# set ZERO_IMAGE_TAG=v0.38.0 in .env (or keep latest), then
+# set ZERO_IMAGE_TAG=v0.39.0 in .env (or keep latest), then
 docker compose pull && docker compose up -d
 ```
 
@@ -148,7 +148,7 @@ The image includes the OpenSSH client, so Settings or `0 computers add --ssh use
 docker run -d ... \
   -v "$PWD/zero_ed25519:/home/ubuntu/.ssh/id_ed25519:ro" \
   -v "$PWD/known_hosts:/home/ubuntu/.ssh/known_hosts:ro" \
-  ghcr.io/0sec-labs/0security:v0.38.0
+  ghcr.io/0sec-labs/0security:v0.39.0
 ```
 
 The container runs as uid 1000. The key file must be readable by that user and not by others: on a Linux host run `sudo chown 1000:1000 zero_ed25519 && chmod 600 zero_ed25519`. OpenSSH refuses a key that is group- or world-readable and owned by the same user, and a key you cannot read at all. Commented lines in the compose file show the same mounts.
@@ -159,9 +159,9 @@ The remote computer needs: Linux, Node.js, an SSH account that can run `bash`, a
 
 ### Pull request reviews
 
-A Sentinel with a `github-pr` trigger polls `gh pr list`, so it needs no inbound address and works from a container behind a proxy. It only needs GitHub access from the container: set `GH_TOKEN` (or `GITHUB_TOKEN`) in `.env` to a fine-grained token limited to the repositories you review (Contents, Pull requests and Metadata, read), or run `docker compose exec -it zero gh auth login` once (the credential is kept under `/data/.config/gh`). Reviews are drafts in the app and post nothing to GitHub unless you turn on comments. Details are in [Agents](/sentinels/#github-pull-request-trigger).
+A Sentinel with a `github-pr` trigger polls `gh pr list`, so it needs no inbound address and works from a container behind a proxy. It only needs GitHub access from the container: set `GH_TOKEN` (or `GITHUB_TOKEN`) in `.env` to a fine-grained token limited to the repositories you review (Contents, Pull requests and Metadata, read), or run `docker compose exec -it zero gh auth login` once (the credential is kept under `/data/.config/gh`). Reviews are drafts in the app and post nothing to GitHub unless you turn on comments. Details are in [Sentinels](/sentinels/#github-pull-request-trigger).
 
-With a public HTTPS address (`ZERO_PUBLIC_URL`), the optional GitHub webhook at `https://<your domain>/api/webhooks/github` makes pull request Sentinels react right after a push. It is the only address that answers without sign-in, and it requires a valid `X-Hub-Signature-256` on every request. Set it up as described in [Agents](/sentinels/#faster-with-a-github-webhook-server-mode), keep `--trusted-proxy` set so the rate limit sees the real sender, and rotate the secret if it leaks (the old one works for 5 minutes). From a terminal: `docker compose exec zero 0 agents webhook secret rotate --yes`.
+With a public HTTPS address (`ZERO_PUBLIC_URL`), the optional GitHub webhook at `https://<your domain>/api/webhooks/github` makes pull request Sentinels react right after a push. It is the only address that answers without sign-in, and it requires a valid `X-Hub-Signature-256` on every request. Set it up as described in [Sentinels](/sentinels/#faster-with-a-github-webhook-server-mode), keep `--trusted-proxy` set so the rate limit sees the real sender, and rotate the secret if it leaks (the old one works for 5 minutes). From a terminal: `docker compose exec zero 0 sentinels webhook secret rotate --yes`.
 
 ### Not supported
 
@@ -174,11 +174,7 @@ With a public HTTPS address (`ZERO_PUBLIC_URL`), the optional GitHub webhook at 
 
 ### Threat model in short
 
-The console can run security tools and use your model keys, so access to it is full control. In server mode: an anonymous visitor only sees a sign-in page and never receives the console's control token; sign-in sets an `HttpOnly`, `SameSite=Strict` cookie (and `Secure` over HTTPS); wrong tokens are throttled with growing delays; requests for unknown host names, from other origins, or without same-origin evidence on changes are refused; forwarded headers count only from `--trusted-proxy`; sign-ins, failures and refusals are written to the audit log. Keep the access token secret, use HTTPS, and restrict who can reach the port. The [design notes](https://github.com/0sec-labs/0security/blob/main/docs/design/deployment-packaging.md) hold the full model.
-
-## Moving from the old image name
-
-The image is now published only as `ghcr.io/0sec-labs/0security`. The earlier name, without `security` at the end, is no longer updated, so pulling it silently keeps the last version you already had. Switch your `docker run`, Compose files and CI to the new name.
+The console can run security tools and use your model keys, so access to it is full control. In server mode: an anonymous visitor only sees a sign-in page and never receives the console's control token; sign-in sets an `HttpOnly`, `SameSite=Strict` cookie (and `Secure` over HTTPS); wrong tokens are throttled with growing delays; requests for unknown host names, from other origins, or without same-origin evidence on changes are refused; forwarded headers count only from `--trusted-proxy`; sign-ins, failures and refusals are written to the audit log. Keep the access token secret, use HTTPS, and restrict who can reach the port.
 
 ## Supply chain
 
@@ -240,6 +236,6 @@ Register the exact callback URL with your provider. Omit `clientSecretEnv` for a
 
 ## Teams and enterprise
 
-0 is open source under MIT OR Apache-2.0. The CLI, the engine, the browser app, the GitHub Action and the team workspace are all in the [`0sec-labs/0security`](https://github.com/0sec-labs/0security) repository, and nothing in them needs an account, a license key or a 0security-hosted service. Scans, model calls (to the provider you choose, with your own key) and findings stay on your computer, your CI runner or your servers. The one automatic upload is the anonymous telemetry described in [Configuration](/configuration/#telemetry).
+0 is open source under MIT OR Apache-2.0. The CLI, the engine, the browser app and the team workspace are all in the [`0sec-labs/0security`](https://github.com/0sec-labs/0security) repository, and nothing in them needs an account, a license key or a 0security-hosted service. Model calls (to the provider you choose, with your own key) and findings stay on your computer, your CI runner or your servers. The one automatic upload is the anonymous telemetry described in [Configuration](/configuration/#telemetry).
 
 A team workspace shares one computer between members. It is not a multi-tenant service: sessions are held in memory (members sign in again after a restart), and results from several computers are not merged. Enterprise is arranged with us rather than self-served, for example running 0 on your own infrastructure with our help or a dedicated deployment that we operate for you, one customer per deployment, by contract. We do not publish a Helm chart or a Terraform module and do not offer a shared multi-tenant cloud. [Book a demo](https://0.security/enterprise/).
